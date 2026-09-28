@@ -111,13 +111,12 @@ function viewRoutine(id) {
     </div>
     <div class="actions sticky">
       <button class="btn primary big" id="start">Start workout</button>
-      <button class="btn big" id="circuit">Run as HIIT circuit</button>
+      <button class="btn big" id="circuit">Start with HIIT timer</button>
     </div>`;
   $app.querySelector('#start').onclick = () => startWorkout(r);
   $app.querySelector('#circuit').onclick = () => {
     const s = store.getSettings();
-    s.hiit.routine = r.id;
-    s.hiit.rounds = r.items.length;
+    useRoutineInHiit(s.hiit, r);
     store.saveSettings(s);
     location.hash = '#/hiit';
   };
@@ -126,8 +125,13 @@ function viewRoutine(id) {
 function startWorkout(r) {
   const active = store.getActive();
   if (active && !confirm(`Discard the in-progress "${active.name}" workout?`)) return;
+  store.setActive(newWorkout(r));
+  location.hash = '#/workout';
+}
+
+function newWorkout(r) {
   const history = store.getHistory();
-  const w = {
+  return {
     id: uid(), routineId: r.id, name: r.name, start: Date.now(), idx: 0, rest: r.rest,
     items: r.items.map((it) => {
       const last = store.lastSetsFor(it.ex, history);
@@ -146,8 +150,6 @@ function startWorkout(r) {
       };
     }),
   };
-  store.setActive(w);
-  location.hash = '#/workout';
 }
 
 const prevLabel = (s) => (s.s ? `${s.s}s` : `${s.w ? s.w + '×' : ''}${s.r || '—'}`);
@@ -400,17 +402,22 @@ function finishWorkout() {
   }
   const total = w.items.reduce((a, it) => a + it.sets.length, 0);
   if (n < total && !confirm(`${n} of ${total} sets done. Finish and save anyway?`)) return;
-  const session = {
+  const session = toSession(w);
+  store.addSession(session);
+  endWorkout();
+  sound.finish();
+  location.hash = `#/session/${session.id}`;
+}
+
+function toSession(w, extra = {}) {
+  return {
     id: w.id, type: 'routine', routineId: w.routineId, name: w.name, start: w.start, end: Date.now(),
     entries: w.items.map((it) => ({
       ex: it.ex,
       sets: it.sets.filter((s) => s.done).map((s) => (it.secs ? { s: Number(s.s) } : { w: s.w === '' ? '' : Number(s.w), r: Number(s.r) || 0 })),
     })).filter((e) => e.sets.length),
+    ...extra,
   };
-  store.addSession(session);
-  endWorkout();
-  sound.finish();
-  location.hash = `#/session/${session.id}`;
 }
 
 function endWorkout() {
@@ -421,12 +428,51 @@ function endWorkout() {
 }
 
 // ---------------------------------------------------------------- HIIT
+// Two modes:
+//  - No routine: a plain interval timer (work / rest × sets).
+//  - Routine picked: a timed version of that workout. Every set of every exercise gets a
+//    work countdown, then a rest countdown where you log weight × reps for the set just done.
+
+function useRoutineInHiit(c, r) {
+  c.routine = r.id;
+  c.rest = Math.max(5, r.rest);
+  if (c.work < 30) c.work = 40;
+}
+
+function timedPlan(c, r) {
+  const ph = [];
+  if (c.prep) ph.push({ kind: 'prep', dur: c.prep, item: 0, set: 0 });
+  r.items.forEach((it, i) => {
+    for (let s = 0; s < it.sets; s++) {
+      ph.push({ kind: 'work', dur: it.secs || c.work, item: i, set: s });
+      const lastSet = s === it.sets - 1;
+      if (lastSet && i === r.items.length - 1) break;
+      ph.push({
+        kind: 'rest', dur: lastSet ? c.exRest : c.rest,
+        item: lastSet ? i + 1 : i, set: lastSet ? 0 : s + 1, // what's coming next
+        log: { item: i, set: s }, // the set just finished
+      });
+    }
+  });
+  return ph;
+}
+
+function plainPlan(c) {
+  const ph = [];
+  if (c.prep) ph.push({ kind: 'prep', dur: c.prep, set: 0 });
+  for (let i = 0; i < c.rounds; i++) {
+    ph.push({ kind: 'work', dur: c.work, set: i });
+    if (c.rest > 0 && i < c.rounds - 1) ph.push({ kind: 'rest', dur: c.rest, set: i + 1 });
+  }
+  return ph;
+}
 
 function viewHiit() {
   const s = store.getSettings();
   const c = s.hiit;
   const r = routineById(c.routine);
-  const total = c.prep + c.rounds * c.work + Math.max(0, c.rounds - 1) * c.rest;
+  const phases = r ? timedPlan(c, r) : plainPlan(c);
+  const total = phases.reduce((a, p) => a + p.dur, 0);
   const stepper = (key, label, step, min, max) => `
     <div class="stepper">
       <div class="muted small">${label}</div>
@@ -439,23 +485,38 @@ function viewHiit() {
 
   $app.innerHTML = `
     <header class="top"><h1>HIIT Timer</h1></header>
-    <div class="chips wrap pad">
-      ${HIIT_PRESETS.map((p, i) => `<button class="chip ${p.work === c.work && p.rest === c.rest && p.rounds === c.rounds ? 'on' : ''}" data-p="${i}">${esc(p.name)}</button>`).join('')}
-    </div>
-    <div class="steppers">
-      ${stepper('work', 'Work', 5, 5, 600)}
-      ${stepper('rest', 'Rest', 5, 0, 600)}
-      ${stepper('rounds', 'Rounds', 1, 1, 99)}
-      ${stepper('prep', 'Get ready', 5, 0, 60)}
-    </div>
     <label class="field pad">
-      <span class="muted small">Exercises (optional: cycles one per round)</span>
+      <span class="muted small">Workout</span>
       <select id="routine">
-        <option value="">None: just the timer</option>
-        ${ROUTINES.map((x) => `<option value="${x.id}" ${x.id === c.routine ? 'selected' : ''}>${esc(x.source)}: ${esc(x.name)} (${x.items.length})</option>`).join('')}
+        <option value="">None: plain interval timer</option>
+        ${ROUTINES.map((x) => `<option value="${x.id}" ${x.id === c.routine ? 'selected' : ''}>${esc(x.day)} · ${esc(x.name)} (${esc(x.source)})</option>`).join('')}
       </select>
     </label>
-    ${r && c.rounds % r.items.length ? `<p class="pad small muted">${r.items.length} exercises: <button class="link" id="match">set rounds to ${Math.ceil(c.rounds / r.items.length) * r.items.length}</button> for full circuits.</p>` : ''}
+    ${r ? `
+      <div class="steppers">
+        ${stepper('work', 'Work per set', 5, 10, 300)}
+        ${stepper('rest', 'Rest between sets', 5, 5, 300)}
+        ${stepper('exRest', 'Rest between exercises', 15, 5, 600)}
+        ${stepper('prep', 'Get ready', 5, 0, 60)}
+      </div>
+      <p class="pad small muted">Log weight and reps during each rest. Planks use their own hold time.</p>
+      <div class="list">
+        ${r.items.map((it, i) => `
+          <div class="row">
+            <img class="thumb" src="${img(it.ex)}" alt="" loading="lazy">
+            <div class="grow"><strong>${i + 1}. ${esc(EXERCISES[it.ex].name)}</strong><div class="muted small">${target(it)}</div></div>
+          </div>`).join('')}
+      </div>`
+    : `
+      <div class="chips wrap pad">
+        ${HIIT_PRESETS.map((p, i) => `<button class="chip ${p.work === c.work && p.rest === c.rest && p.rounds === c.rounds ? 'on' : ''}" data-p="${i}">${esc(p.name)}</button>`).join('')}
+      </div>
+      <div class="steppers">
+        ${stepper('work', 'Work', 5, 5, 600)}
+        ${stepper('rest', 'Rest', 5, 0, 600)}
+        ${stepper('rounds', 'Sets', 1, 1, 99)}
+        ${stepper('prep', 'Get ready', 5, 0, 60)}
+      </div>`}
     <div class="total pad"><span class="muted">Total</span> <strong>${fmt(total)}</strong></div>
     <div class="actions sticky"><button class="btn primary big" id="go">Start</button></div>`;
 
@@ -470,48 +531,42 @@ function viewHiit() {
     Object.assign(c, { work: p.work, rest: p.rest, rounds: p.rounds });
     save();
   }));
-  $app.querySelector('#routine').onchange = (e) => { c.routine = e.target.value; save(); };
-  const m = $app.querySelector('#match');
-  if (m) m.onclick = () => { c.rounds = Math.ceil(c.rounds / r.items.length) * r.items.length; save(); };
-  $app.querySelector('#go').onclick = () => runHiit({ ...c }, r);
+  $app.querySelector('#routine').onchange = (e) => {
+    const nr = routineById(e.target.value);
+    if (nr) useRoutineInHiit(c, nr); else c.routine = '';
+    save();
+  };
+  $app.querySelector('#go').onclick = () => (r ? runTimedRoutine({ ...c }, r) : runPlainHiit({ ...c }));
 }
 
-function runHiit(c, r) {
-  const exs = r ? r.items.map((it) => it.ex) : [];
-  const phases = [];
-  if (c.prep) phases.push({ kind: 'prep', dur: c.prep, round: 1, ex: exs[0] });
-  for (let i = 1; i <= c.rounds; i++) {
-    const ex = exs.length ? exs[(i - 1) % exs.length] : null;
-    phases.push({ kind: 'work', dur: c.work, round: i, ex });
-    if (c.rest > 0 && i < c.rounds) phases.push({ kind: 'rest', dur: c.rest, round: i, ex: exs.length ? exs[i % exs.length] : null });
-  }
-  const started = Date.now();
+// Shared full-screen runner. `screen(p)` returns the HTML for a phase; `hooks` handle the rest.
+function runPhases(phases, { screen, onEnter, onLeave, onFinish }) {
   let idx = 0;
-  let cd;
+  let cd = null;
+  const remainingAfter = (i) => phases.slice(i + 1).reduce((a, p) => a + p.dur, 0);
+  const label = { prep: 'Get ready', work: 'Work', rest: 'Rest' };
 
   sound.keepAwake(true);
   $overlay.hidden = false;
   document.body.classList.add('no-scroll');
 
-  const remainingAfter = (i) => phases.slice(i + 1).reduce((a, p) => a + p.dur, 0);
-  const label = { prep: 'Get ready', work: 'Work', rest: 'Rest' };
-
   function show() {
     const p = phases[idx];
+    onEnter?.(p);
     $overlay.className = p.kind === 'prep' ? 'ready' : p.kind;
-    const exName = p.ex ? EXERCISES[p.ex].name : '';
     $overlay.innerHTML = `
-      <div class="ov-top"><span>Round ${p.round} / ${c.rounds}</span><span id="ototal"></span></div>
+      <div class="ov-top"><span>${screen.top(p)}</span><span id="ototal"></span></div>
       <div class="ov-label">${label[p.kind]}</div>
-      ${p.ex ? `${photo(p.ex, 'ov-photo')}<div class="ov-name">${p.kind === 'work' ? '' : 'Next: '}${esc(exName)}</div>` : ''}
+      ${screen.body(p)}
       <div class="ov-time" id="ot">${fmt(p.dur)}</div>
       <div class="bar"><i id="obar"></i></div>
       <div class="ov-btns">
         <button class="btn big" id="oprev" aria-label="Previous">⏮</button>
-        <button class="btn big primary" id="opause">${cd?.isPaused ? 'Resume' : 'Pause'}</button>
+        <button class="btn big primary" id="opause">Pause</button>
         <button class="btn big" id="onext" aria-label="Skip">⏭</button>
       </div>
       <button class="link ov-end" id="oend">End workout</button>`;
+    screen.bind?.(p);
     const $t = $overlay.querySelector('#ot');
     const $bar = $overlay.querySelector('#obar');
     const $total = $overlay.querySelector('#ototal');
@@ -522,49 +577,154 @@ function runHiit(c, r) {
         $bar.style.width = `${Math.min(100, prog * 100)}%`;
         $total.textContent = `${fmt(sec + remainingAfter(idx))} left`;
       },
-      onDone: () => advance(1, true),
+      onDone: () => move(1, true),
     });
     cd.start(p.dur);
     $overlay.querySelector('#opause').onclick = (e) => {
       if (cd.isPaused) { cd.resume(); e.target.textContent = 'Pause'; } else { cd.pause(); e.target.textContent = 'Resume'; }
     };
-    $overlay.querySelector('#onext').onclick = () => advance(1, false);
-    $overlay.querySelector('#oprev').onclick = () => advance(idx > 0 ? -1 : 0, false);
-    $overlay.querySelector('#oend').onclick = () => { if (confirm('End this HIIT session?')) done(false); };
+    $overlay.querySelector('#onext').onclick = () => move(1, false);
+    $overlay.querySelector('#oprev').onclick = () => move(idx > 0 ? -1 : 0, false);
+    $overlay.querySelector('#oend').onclick = () => { if (confirm('End this workout?')) finish(false); };
   }
 
-  function advance(d, natural) {
+  function move(d, natural) {
+    onLeave?.(phases[idx], d);
     idx += d;
-    if (idx >= phases.length) return done(true);
-    const k = phases[idx].kind;
-    if (natural) (k === 'work' ? sound.go : sound.stop)();
+    if (idx >= phases.length) return finish(true);
+    if (natural) (phases[idx].kind === 'work' ? sound.go : sound.stop)();
     show();
   }
 
-  function done(complete) {
+  function finish(complete) {
     cd?.stop();
-    const secs = Math.round((Date.now() - started) / 1000);
     if (complete) sound.finish();
-    const roundsDone = complete ? c.rounds : phases.slice(0, idx).filter((p) => p.kind === 'work').length;
-    if (roundsDone > 0) {
-      store.addSession({
-        id: uid(), type: 'hiit', name: `HIIT ${c.work}/${c.rest}${r ? ' · ' + r.name : ''}`, routineId: null,
-        start: started, end: Date.now(), hiit: { ...c, roundsDone }, entries: [],
-      });
-    }
     $overlay.className = 'ready';
-    $overlay.innerHTML = `
-      <div class="ov-label">${complete ? 'Done! 🎉' : 'Stopped'}</div>
-      <div class="ov-name">${roundsDone} of ${c.rounds} rounds · ${fmt(secs)}</div>
-      <div class="ov-btns"><button class="btn big primary" id="oclose">Close</button></div>`;
-    $overlay.querySelector('#oclose').onclick = () => {
-      $overlay.hidden = true;
-      document.body.classList.remove('no-scroll');
-      sound.keepAwake(!!store.getActive());
-    };
+    onFinish(complete, phases.slice(0, complete ? phases.length : idx));
+  }
+
+  function close() {
+    $overlay.hidden = true;
+    document.body.classList.remove('no-scroll');
+    sound.keepAwake(!!store.getActive());
   }
 
   show();
+  return { close };
+}
+
+function runPlainHiit(c) {
+  const started = Date.now();
+  const runner = runPhases(plainPlan(c), {
+    screen: { top: (p) => `Set ${p.set + 1} / ${c.rounds}`, body: () => '' },
+    onFinish: (complete, done) => {
+      const setsDone = done.filter((p) => p.kind === 'work').length;
+      if (setsDone > 0) {
+        store.addSession({
+          id: uid(), type: 'hiit', name: `HIIT ${c.work}/${c.rest}`, routineId: null,
+          start: started, end: Date.now(), hiit: { ...c, roundsDone: setsDone }, entries: [],
+        });
+      }
+      $overlay.innerHTML = `
+        <div class="ov-label">${complete ? 'Done! 🎉' : 'Stopped'}</div>
+        <div class="ov-name">${setsDone} of ${c.rounds} sets · ${fmt((Date.now() - started) / 1000)}</div>
+        <div class="ov-btns"><button class="btn big primary" id="oclose">Close</button></div>`;
+      $overlay.querySelector('#oclose').onclick = () => runner.close();
+    },
+  });
+}
+
+function runTimedRoutine(c, r) {
+  const w = newWorkout(r);
+  w.name = `${r.name} · HIIT`;
+  const u = unit();
+  const n = w.items.length;
+  const itemAt = (p) => w.items[p.item];
+  const exName = (it) => esc(EXERCISES[it.ex].name);
+  const goal = (it) => (it.secs ? `Hold ${it.secs}s` : it.reps === 'max' ? 'Max reps' : `${it.reps.replace('-', '–')} reps`);
+
+  // Weight typed for a set carries forward to that exercise's later sets.
+  const setWeight = (it, from, v) => { for (let j = from; j < it.sets.length; j++) if (j === from || !it.sets[j].done) it.sets[j].w = v; };
+
+  const logRow = (it, si) => (it.secs ? '' : `
+    <div class="ov-log">
+      <div class="small">Log set ${si + 1}: ${exName(it)}</div>
+      <div class="ov-inputs">
+        <input data-log="w" inputmode="decimal" type="number" step="any" min="0" placeholder="—" value="${esc(it.sets[si].w)}"><span>${u} ×</span>
+        <input data-log="r" inputmode="numeric" type="number" min="0" placeholder="${esc(repGuess(it.reps))}" value="${esc(it.sets[si].r)}"><span>reps</span>
+      </div>
+    </div>`);
+  const bindLog = (it, si) => {
+    $overlay.querySelectorAll('[data-log]').forEach((inp) => {
+      inp.oninput = () => (inp.dataset.log === 'w' ? setWeight(it, si, inp.value) : (it.sets[si].r = inp.value));
+    });
+  };
+  const nextWeightRow = (it, si) => (it.secs ? '' : `
+    <div class="ov-log"><div class="ov-inputs">
+      <span class="small">Weight for set ${si + 1}</span>
+      <input data-next="w" inputmode="decimal" type="number" step="any" min="0" placeholder="—" value="${esc(it.sets[si].w)}"><span>${u}</span>
+    </div></div>`);
+
+  const runner = runPhases(timedPlan(c, r), {
+    screen: {
+      top: (p) => `Exercise ${p.item + 1}/${n} · Set ${p.set + 1}/${itemAt(p).sets.length}`,
+      body: (p) => {
+        const it = itemAt(p);
+        const s = it.sets[p.set];
+        if (p.kind === 'work') {
+          return `${photo(it.ex, 'ov-photo')}
+            <div class="ov-name">${exName(it)}</div>
+            <div class="ov-sub">${goal(it)}${!it.secs && s.w !== '' ? ` · ${esc(s.w)} ${u}` : ''}</div>`;
+        }
+        const newExercise = p.kind === 'prep' || p.log?.item !== p.item;
+        return `
+          ${p.log ? logRow(w.items[p.log.item], p.log.set) : ''}
+          ${newExercise ? photo(it.ex, 'ov-photo small') : ''}
+          <div class="ov-name">Next: ${exName(it)}</div>
+          <div class="ov-sub">Set ${p.set + 1} of ${it.sets.length} · ${goal(it)}</div>
+          ${newExercise ? nextWeightRow(it, p.set) : ''}`;
+      },
+      bind: (p) => {
+        if (p.log) bindLog(w.items[p.log.item], p.log.set);
+        const nx = $overlay.querySelector('[data-next]');
+        if (nx) nx.oninput = () => setWeight(itemAt(p), p.set, nx.value);
+      },
+    },
+    onEnter: (p) => { if (p.kind === 'work') itemAt(p).sets[p.set].done = false; },
+    onLeave: (p, d) => {
+      if (p.kind !== 'work' || d <= 0) return;
+      const it = itemAt(p);
+      it.sets[p.set].done = true;
+      if (it.secs) it.sets[p.set].s = String(p.dur);
+    },
+    onFinish: (complete, done) => {
+      const lastWork = [...done].reverse().find((p) => p.kind === 'work');
+      const lastIt = lastWork && itemAt(lastWork);
+      const setsDone = doneSets(w);
+      $overlay.innerHTML = `
+        <div class="ov-label">${complete ? 'Done! 🎉' : 'Stopped'}</div>
+        <div class="ov-name">${setsDone} sets · ${fmt((Date.now() - w.start) / 1000)}</div>
+        ${lastIt && lastIt.sets[lastWork.set].done ? logRow(lastIt, lastWork.set) : ''}
+        <div class="ov-btns">
+          ${setsDone ? '<button class="btn big" id="odiscard">Discard</button><button class="btn big primary" id="osave">Save</button>'
+            : '<button class="btn big primary" id="odiscard">Close</button>'}
+        </div>`;
+      if (lastIt) bindLog(lastIt, lastWork.set);
+      $overlay.querySelector('#odiscard').onclick = () => {
+        if (setsDone && !confirm('Discard this workout? Nothing will be saved.')) return;
+        runner.close();
+      };
+      const $save = $overlay.querySelector('#osave');
+      if ($save) $save.onclick = () => {
+        // Sets logged without reps get the target rep count.
+        for (const it of w.items) for (const s of it.sets) if (s.done && !it.secs && s.r === '') s.r = repGuess(it.reps);
+        const session = toSession(w, { timed: { work: c.work, rest: c.rest, exRest: c.exRest } });
+        store.addSession(session);
+        runner.close();
+        location.hash = `#/session/${session.id}`;
+      };
+    },
+  });
 }
 
 // ---------------------------------------------------------------- library
@@ -642,7 +802,7 @@ function viewHistory() {
       ${h.map((x) => `
         <a class="row" href="#/session/${x.id}">
           <div class="grow"><strong>${esc(x.name)}</strong>
-          <div class="muted small">${dateStr(x.start)} · ${fmt((x.end - x.start) / 1000)}${x.type === 'hiit' ? ` · ${x.hiit.roundsDone} rounds` : ` · ${x.entries.reduce((a, e) => a + e.sets.length, 0)} sets`}</div></div>
+          <div class="muted small">${dateStr(x.start)} · ${fmt((x.end - x.start) / 1000)}${x.type === 'hiit' ? ` · ${x.hiit.roundsDone} sets` : ` · ${x.entries.reduce((a, e) => a + e.sets.length, 0)} sets`}</div></div>
           <span class="chev">›</span>
         </a>`).join('') || '<p class="pad muted">No workouts yet. Go lift something.</p>'}
     </div>
@@ -694,7 +854,7 @@ function viewSession(id) {
     <div class="stats pad">
       <div><strong>${fmt((x.end - x.start) / 1000)}</strong><span class="muted small">duration</span></div>
       ${x.type === 'hiit'
-        ? `<div><strong>${x.hiit.roundsDone}/${x.hiit.rounds}</strong><span class="muted small">rounds (${x.hiit.work}s / ${x.hiit.rest}s)</span></div>`
+        ? `<div><strong>${x.hiit.roundsDone}/${x.hiit.rounds}</strong><span class="muted small">sets (${x.hiit.work}s / ${x.hiit.rest}s)</span></div>`
         : `<div><strong>${x.entries.reduce((a, e) => a + e.sets.length, 0)}</strong><span class="muted small">sets</span></div>
            ${volume ? `<div><strong>${Math.round(volume).toLocaleString()}</strong><span class="muted small">${u} volume</span></div>` : ''}`}
     </div>

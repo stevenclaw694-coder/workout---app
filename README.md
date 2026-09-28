@@ -6,7 +6,9 @@ A personal workout app that runs in the browser and installs on your phone's hom
 - **Set logging**: weight and reps for each set. Each set is prefilled from last time so you know what to beat.
 - **Rest timer** starts on its own when you tick off a set. You can adjust it by ±15s or skip it.
 - **Timed holds** for planks: a 5-second get-ready, then a countdown.
-- **HIIT timer** with work/rest/rounds and presets (Tabata, 40/20, 30/30, EMOM). You can also run any routine as a circuit.
+- **HIIT timer**, two ways:
+  - **Pick a routine** (e.g. Monday → Chest & Shoulders) to get a timed version of that workout. It goes exercise by exercise, and every set gets a work countdown and then a rest countdown. During each rest you log weight × reps for the set you just did. You set the work time per set, rest between sets, and rest between exercises. The session is saved to History like a normal workout.
+  - **No routine** gives a plain interval timer (work / rest × sets) with presets: Tabata, 40/20, 30/30, EMOM.
 - **Exercise library**: two-frame photo, short description, form cues, and your last and best sets.
 - Beeps, vibration, and the screen stays awake during workouts.
 

@@ -23,7 +23,7 @@ const DEFAULT_SETTINGS = {
   unit: 'lb',
   sound: true,
   vibrate: true,
-  hiit: { work: 20, rest: 10, rounds: 8, prep: 10, routine: '' },
+  hiit: { work: 20, rest: 10, rounds: 8, prep: 10, exRest: 60, routine: '' },
 };
 
 export function getSettings() {

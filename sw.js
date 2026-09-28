@@ -1,6 +1,6 @@
 // Offline support. App files: network first (so updates show up), cache fallback.
 // Photos: cache first (they never change).
-const SHELL = 'wk-shell-v1';
+const SHELL = 'wk-shell-v2';
 const IMGS = 'wk-img-v1';
 const SHELL_FILES = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest',

@@ -265,3 +265,20 @@ select, input[type="search"] {
   .ov-photo { display: none; }
   .ov-time { font-size: 30vh; }
 }
+
+/* Timed routine (HIIT) extras */
+#overlay { overflow-y: auto; justify-content: safe center; }
+.ov-sub { font-size: 16px; opacity: .9; margin-bottom: 4px; }
+.ov-photo.small { width: min(70%, 300px); }
+.ov-log {
+  width: min(100%, 420px); margin: 8px 0 10px; padding: 10px 12px;
+  background: rgba(0, 0, 0, .22); border-radius: 12px;
+}
+.ov-inputs { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 6px; }
+.ov-inputs input {
+  width: 84px; height: 46px; text-align: center; font: inherit; font-size: 20px; font-weight: 700;
+  color: #fff; background: rgba(0, 0, 0, .3); border: 1px solid rgba(255, 255, 255, .35); border-radius: 10px;
+}
+.ov-inputs input::placeholder { color: rgba(255, 255, 255, .55); }
+.ov-inputs input:focus { outline: 2px solid #fff; }
+#overlay .ov-time { margin: 4px 0 12px; }
